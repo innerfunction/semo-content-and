@@ -1,8 +1,10 @@
 package com.innerfunction.semo.content;
 
 import java.io.File;
+import java.net.MalformedURLException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -10,8 +12,13 @@ import java.util.Map;
 import name.fraser.neil.plaintext.diff_match_patch;
 import name.fraser.neil.plaintext.diff_match_patch.Patch;
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.util.Log;
 
 import com.innerfunction.util.FileIO;
+import com.innerfunction.util.HTTPUtils;
+import com.innerfunction.util.StringTemplate;
 
 /**
  * A content subscription.
@@ -19,6 +26,8 @@ import com.innerfunction.util.FileIO;
  * @author juliangoacher
  */
 public class Subscription {
+
+    static final String Tag = Subscription.class.getSimpleName();
 
     static final String ContentTextEncoding = "utf-8";
     
@@ -32,6 +41,25 @@ public class Subscription {
     private MessageDigest md;
     /** The subscription's content directory. */
     private File contentDir;
+    /** Local storage vars specific to this subscription. */
+    private Locals subLocals;
+    /** General local storage vars, common to all subscriptions. */
+    private Locals generalLocals;
+    /** The feed's content URL. */
+    private String contentURL;
+    /** The subscription's download file. */
+    private File downloadFile;
+    /** File download callback handler. */
+    private HTTPUtils.GetFileCallback contentDownloadHandler = new HTTPUtils.GetFileCallback() {
+        @Override
+        public void receivedFile(File file) {
+            Subscription.this.unpackContent( file, false );
+            Subscription.this.finishDownload();
+            if( !file.delete() ) {
+                Log.w( Tag, String.format("Failed to delete download file at %s", file ) );
+            }
+        }
+    };
     
     public Subscription(String name, SubscriptionManager manager, Context context) {
         this.name = name;
@@ -44,12 +72,168 @@ public class Subscription {
             // Really shouldn't happen.
         }
         contentDir = new File( manager.getContentDir(), name );
+        subLocals = new Locals( String.format("semo.subs.%s", name ) );
+        generalLocals = manager.getSettings();
     }
     
     public File getContentDir() {
         return contentDir;
     }
     
+    /**
+     * Refresh the subscription's content.
+     * Checks the general download policy, and attempts to download an update if the policy
+     * allows it.
+     */
+    public void refresh() {
+        String downloadPolicy = generalLocals.getString("downloadPolicy", null );
+        Log.i( Tag, String.format("downloadPolicy=%s", downloadPolicy) );
+        if( "never".equals( downloadPolicy ) ) {
+            // Downloads disabled
+            return;
+        }
+        // Check connectivity.
+        ConnectivityManager cm = (ConnectivityManager)context.getSystemService( Context.CONNECTIVITY_SERVICE );
+        NetworkInfo activeNetwork = cm.getActiveNetworkInfo();
+        boolean connected = activeNetwork != null && activeNetwork.isConnectedOrConnecting();
+        if( !connected ) {
+            // No network, so can't download.
+            Log.d( Tag, "Network not reachable");
+            return;
+        }
+        // Check network type.
+        // TODO: Download policy values may need to be reviewed here - Android provides greater
+        // discrimination between network types.
+        switch( activeNetwork.getType() ) {
+        case ConnectivityManager.TYPE_WIFI:
+        case ConnectivityManager.TYPE_WIMAX:
+        case ConnectivityManager.TYPE_ETHERNET:
+            // Always download over wifi network.
+            Log.d( Tag, "WIFI or equivalent network available");
+            startDownload();
+            break;
+        default:
+            Log.d( Tag, "Non-WIFI network available");
+            if( !"wifi-only".equals( downloadPolicy ) ) {
+                // Only download if policy allows it.
+                startDownload();
+            }
+        }
+    }
+
+    /**
+     * Start the download process.
+     * If a previous, interrupted, download is detected then resume that; otherwise
+     * check for updated content.
+     */
+    protected void startDownload() {
+        contentURL = subLocals.getString("contentURL", null );
+        String downloadFileName = subLocals.getString("filename", null );
+        if( contentURL != null && downloadFileName != null ) {
+            downloadFile = new File( downloadFileName );
+            resumeDownload();
+        }
+        else {
+            checkForUpdates();
+        }
+    }
+
+    /**
+     * Resume an interrupted download.
+     */
+    protected void resumeDownload() {
+        if( downloadFile.exists() ) {
+            long offset = downloadFile.length();
+            try {
+                HTTPUtils.getFile( contentURL, offset, downloadFile, contentDownloadHandler );
+            }
+            catch(MalformedURLException e) {
+                Log.w( Tag, String.format("Bad content URL: %s", contentURL ));
+            }
+        }
+        else {
+            // Download file not found; clean up build and start again.
+            finishDownload();
+            checkForUpdates();
+        }
+    }
+
+    /**
+     * Check for updated content.
+     */
+    protected void checkForUpdates() {
+        String subsURL = manager.getSubscriptionURL();
+        if( subsURL == null ) {
+            Subscription.this.finishDownload();
+            return;
+        }
+        // Feed ID can be specified as a template accepting feed ID and since build build as values.
+        Map<String,Object> context = new HashMap<String,Object>();
+        context.put("subs", name );
+        context.put("since", subLocals.getString("version") );
+        String url = StringTemplate.render( subsURL, context );
+        // Send the HTTP request.
+        try {
+            HTTPUtils.getJSON( url, new HTTPUtils.GetJSONCallback() {
+                @Override
+                public void receivedJSON(Map<String, Object> json) {
+                    String status = "unknown";
+                    if( json != null ) {
+                        json.get("status").toString();
+                    }
+                    if("error".equals( status ) ) {
+                        // Feed error.
+                        Subscription.this.finishDownload();
+                    }
+                    else if("no-update".equals( status) || "no-content-available".equals( status )) {
+                        // No update available.
+                        Subscription.this.finishDownload();
+                    }
+                    else if("update-since".equals( status ) || "current-content".equals( status )) {
+                        // Read content URL and start update download.
+                        String url = json.get("url").toString();
+                        subLocals.setString("status", status );
+                        Subscription.this.downloadContent( url );
+                    }
+                    else {
+                        Subscription.this.finishDownload();
+                    }
+                }
+            });
+        }
+        catch(MalformedURLException e) {
+            Log.w( Tag, String.format("Bad build query URL: %s", url ));
+            Subscription.this.finishDownload();
+        }
+    }
+
+    protected void downloadContent(String contentURL) {
+        subLocals.setString("contentURL", contentURL );
+        // Delete any previous download file.
+        if( downloadFile != null && downloadFile.exists() ) {
+            downloadFile.delete();
+        }
+        // Setup the download file path. This is placed in the app's tmp directory.
+        String filename = String.format("_semo_content_%s.zip", name );
+        downloadFile = new File( manager.getDownloadDir(), filename );
+        subLocals.setString("downloadFile", downloadFile.getAbsolutePath() );
+        // Send download request.
+        try {
+            HTTPUtils.getFile( contentURL, 0, downloadFile, contentDownloadHandler );
+        }
+        catch(MalformedURLException e) {
+            Log.w( Tag, String.format("Bad content URL: %s", contentURL ));
+        }
+    }
+
+    protected void finishDownload() {
+        if( downloadFile != null ) {
+            downloadFile.delete();
+            downloadFile = null;
+        }
+        subLocals.remove("url","filename","status");
+    }
+
     /**
      * Unpack subscription content.
      * Unpacks a content update from a content zip file.
@@ -61,7 +245,7 @@ public class Subscription {
     public void unpackContent(File sourceZipFile, boolean resume) {
         try {
             // Check for an unpack status left over from a previous interrupted process.
-            String unpackStatus = getLocalString("unpackStatus");
+            String unpackStatus = subLocals.getString("unpackStatus");
             // In no unpack status found...
             if( unpackStatus == null ) {
                 // If resuming then nothing more to do.
@@ -69,14 +253,14 @@ public class Subscription {
                     return;
                 }
                 // Set initial unpack state.
-                unpackStatus = setLocalString("unpackStatus", "unzip");
+                unpackStatus = subLocals.setString("unpackStatus", "unzip");
             }
             
             if("unzip".equals( unpackStatus ) ) {
                 // Unzip the content zip into the sub's content directory, overwriting
                 // and possibly replacing any pre-existing files.
                 FileIO.unzip( sourceZipFile, contentDir );
-                unpackStatus = setLocalString("unpackStatus", "patch");
+                unpackStatus = subLocals.setString("unpackStatus", "patch");
             }
             
             // Read the content manifest.
@@ -105,7 +289,7 @@ public class Subscription {
                 List<Object> patches = (List<Object>)versionManifest.get("patches");
                 // Set a pointer on the current patch. If a previous patch process was interrupted then this
                 // should resume from that point; else position before the first patch.
-                int patchIndex = getLocalInt("patchIndex", -1 );
+                int patchIndex = subLocals.getInt("patchIndex", -1 );
                 // A map containing info about the current file patch.
                 Map<String,Object> patch;
                 // The target file being patched.
@@ -152,7 +336,7 @@ public class Subscription {
                             patchFileContents = (String)patcher.patch_apply( filePatches, patchFileContents )[0];
                             // Validate post-patch state using MD5 hash.
                             hash = md5Hash( patchFileContents );
-                            if( !hash.equals( patch.get("afterHash") ) ) {
+                            if( !hash.equals( patch.get("after") ) ) {
                                 // Post-patch state is invalid, so fatal error.
                                 throw new Exception( String.format("Inconsistent post-patch state for %s", patchFile ) );
                             }
@@ -169,7 +353,7 @@ public class Subscription {
                                 throw new Exception( String.format("Failed to move patch.temp to %s when patching", patchFile ) );
                             }
                         }
-                        else if( !hash.equals( patch.get("afterHash") ) ) {
+                        else if( !hash.equals( patch.get("after") ) ) {
                             // Target file state doesn't match either the pre- or post-patch state, so something odd
                             // has happened; can't recover from this, so fatal error.
                             throw new Exception( String.format("Inconsistent post-patch state for %s", patchFile ) );
@@ -177,11 +361,11 @@ public class Subscription {
                         // Else file was fully patched before interruption, nothing more to do.
                     }
                     // Update pointer to next patch.
-                    patchIndex = setLocalInt("patchIndex", patchIndex + 1 );
+                    patchIndex = subLocals.setInt("patchIndex", patchIndex + 1 );
                 }
                 else {
                     // Move patch pointer to first patch on list.
-                    patchIndex = setLocalInt("patchIndex", 0 );
+                    patchIndex = subLocals.setInt("patchIndex", 0 );
                 }
                 
                 // Iterate over all un-applied patches.
@@ -197,7 +381,7 @@ public class Subscription {
                     patchFileContents = FileIO.readString( patchFile, ContentTextEncoding );
                     // Validate using MD5 hash that patch content is correct.
                     CharSequence hash = md5Hash( patchFileContents );
-                    if( !hash.equals( patch.get("beforeHash") ) ) {
+                    if( !hash.equals( patch.get("before") ) ) {
                         throw new Exception( String.format("Inconsistent pre-patch state for %s", patchFile ) );
                     }
                     // Apply patches to the patch target.
@@ -205,7 +389,7 @@ public class Subscription {
                     patchFileContents = (String)patcher.patch_apply( filePatches, patchFileContents )[0];
                     // Validate post-patch state using MD5 hash.
                     hash = md5Hash( patchFileContents );
-                    if( !hash.equals( patch.get("afterHash") ) ) {
+                    if( !hash.equals( patch.get("after") ) ) {
                         throw new Exception( String.format("Inconsistent post-patch state for %s", patchFile ) );
                     }
                     // Write patched content to temporary file.
@@ -221,15 +405,15 @@ public class Subscription {
                         throw new Exception( String.format("Failed to move patch.temp to %s when patching", patchFile ) );
                     }
                     // Iterate to next patch.
-                    patchIndex = setLocalInt("patchIndex", patchIndex + 1 );
+                    patchIndex = subLocals.setInt("patchIndex", patchIndex + 1 );
                 }
                 
-                unpackStatus = setLocalString("unpackStatus", "clean");
+                unpackStatus = subLocals.setString("unpackStatus", "clean");
             }
             
             if("clean".equals( unpackStatus ) ) {
                 
-                removeLocal("patchIndex");
+                subLocals.remove("patchIndex");
                 
                 // Iterate over list of file deletions and delete all files.
                 List<String> deletes = (List<String>)versionManifest.get("deletes");
@@ -245,8 +429,8 @@ public class Subscription {
                     // TODO: Is this a fatal error?
                 }
                 
-                setLocalString("version", newVersion );
-                unpackStatus = setLocalString("unpackStatus", "post-unpack");
+                subLocals.setString("version", newVersion );
+                unpackStatus = subLocals.setString("unpackStatus", "post-unpack");
             }
             
             if("post-unpack".equals( unpackStatus ) ) {
@@ -254,96 +438,35 @@ public class Subscription {
                 List<PostUnpackListener> postUnpackListeners = manager.getPostUnpackListeners();
                 // Set a pointer on the listener being processed. If a previous post-unpack process
                 // was interrupted then this will pickup from that point.
-                int postUnpackIndex = getLocalInt("postUnpackIndex", 0 );
+                int postUnpackIndex = subLocals.getInt("postUnpackIndex", 0 );
                 int postUnpackCount = postUnpackListeners.size();
                 while( postUnpackIndex < postUnpackCount ) {
                     PostUnpackListener listener = postUnpackListeners.get( postUnpackIndex );
                     listener.onPostUnpack( this );
-                    postUnpackCount = setLocalInt("postUnpackIndex", postUnpackIndex + 1 );
+                    postUnpackCount = subLocals.setInt("postUnpackIndex", postUnpackIndex + 1 );
                 }
             }
             
             // Remove process state.
-            removeLocal("postUnpackIndex");
-            removeLocal("unpackStatus");
+            subLocals.remove("postUnpackIndex");
+            subLocals.remove("unpackStatus");
             // Delete the version manifest.
             if( !versionManifestFile.delete() ) {
-                // TODO: Log warning.
+                Log.w( Tag, String.format("Failed to delete version manifest at %s", versionManifestFile ) );
             }
         }
         catch(Exception e) {
-            // TODO: Lock subscription
+            // Lock the subscription.
             manager.lockSubscription( name, true );
-            // TODO: Remove subscription content dir
+            // Remove subscription content dir
             FileIO.removeDir( contentDir, context );
-            // TODO: Unpack base content
+            // Unpack base content.
             manager.unpackBaseContentForSubscription( this );
-            // TODO: Unlock subscription
+            // Unlock subscription.
             manager.lockSubscription( name, false );
-            // TODO: Request full content update
-            manager.refreshSubscription( this );
+            // Request full content update.
+            refresh();
         }
-    }
-    
-    /**
-     * Read a string from local storage.
-     * @param localName
-     * @return
-     */
-    private String getLocalString(String localName) {
-        String key = localKey( localName );
-        return null;
-    }
-    
-    /**
-     * Store a string value in local storage.
-     * @param localName
-     * @param value
-     * @return
-     */
-    private String setLocalString(String localName, String value) {
-        String key = localKey( localName );
-        return value;
-    }
-    
-    /**
-     * Read an int value from local storage.
-     * @param localName
-     * @param defaultValue
-     * @return
-     */
-    private int getLocalInt(String localName, int defaultValue) {
-        String key = localKey( localName );
-        return defaultValue;
-    }
-    
-    /**
-     * Store an int value in local storage.
-     * @param localName
-     * @param value
-     * @return
-     */
-    private int setLocalInt(String localName, int value) {
-        String key = localKey( localName );
-        return value;
-    }
-    
-    /**
-     * Remove a value from local storage.
-     * @param localName
-     */
-    private void removeLocal(String localName) {
-        String key = localKey( localName );
-        
-    }
-    
-    /**
-     * Get the full local storage key for a local var name.
-     * @param localName
-     * @return
-     */
-    private String localKey(String localName) {
-        return String.format("semo.sub.%s.%s", name, localName );
     }
     
     /**

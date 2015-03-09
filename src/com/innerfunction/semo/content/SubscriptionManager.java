@@ -8,8 +8,24 @@ public class SubscriptionManager {
 
     private ArrayList<PostUnpackListener> postUnpackListeners;
     
+    public Locals getSettings() {
+        return null;
+    }
+    
     public File getContentDir() {
         return null;
+    }
+    
+    public File getDownloadDir() {
+        return null;
+    }
+    
+    public String getSubscriptionURL() {
+        return null;
+    }
+    
+    public void unpackBaseContentForSubscription(Subscription subs) {
+        
     }
     
     public List<PostUnpackListener> getPostUnpackListeners() {
