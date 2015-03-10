@@ -17,6 +17,11 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.util.Log;
 
+import com.innerfunction.semo.core.Component;
+import com.innerfunction.semo.core.Configuration;
+import com.innerfunction.uri.FileResource;
+import com.innerfunction.uri.Resource;
+import com.innerfunction.util.BackgroundTaskRunner;
 import com.innerfunction.util.FileIO;
 import com.innerfunction.util.HTTPUtils;
 import com.innerfunction.util.Locals;
@@ -27,7 +32,7 @@ import com.innerfunction.util.StringTemplate;
  * Downloads content updates and unpacks them to the device's local file system.
  * @author juliangoacher
  */
-public class Subscription {
+public class Subscription implements Component {
 
     static final String Tag = Subscription.class.getSimpleName();
 
@@ -36,7 +41,7 @@ public class Subscription {
     /** The subscription name. */
     private String name;
     /** The subscription manager. */
-    private SubscriptionManager manager;
+    private ContentManager manager;
     /** An Android context object. */
     private Context context;
     /** A message digest for calculating hashes of text content. */
@@ -51,6 +56,11 @@ public class Subscription {
     private String contentURL;
     /** The subscription's download file. */
     private File downloadFile;
+    /**
+     * A zip file (packaged with the app) containing the subscription's initial content.
+     * Can be null. Configured using the initialContent property.
+     */
+    private Resource initialContent;
     /** File download callback handler. */
     private HTTPUtils.GetFileCallback contentDownloadHandler = new HTTPUtils.GetFileCallback() {
         @Override
@@ -64,9 +74,9 @@ public class Subscription {
      * If this is null then it means that no refresh is in progress. If it is non-null then
      * it will contain one or more listeners. All listeners are notified once a refresh completes.
      */
-    private List<ContentRefreshListener> refreshListeners;
+    private List<ContentListener> refreshListeners;
     
-    public Subscription(String name, SubscriptionManager manager, Context context) {
+    public Subscription(String name, ContentManager manager, Context context) {
         this.name = name;
         this.manager = manager;
         this.context = context;
@@ -81,6 +91,10 @@ public class Subscription {
         generalLocals = manager.getLocalSettings();
     }
     
+    public void configure(Configuration config) {
+        initialContent = config.getValueAsResource("initialContent");
+    }
+    
     /**
      * Get the subscription's content directory.
      */
@@ -91,8 +105,64 @@ public class Subscription {
     /**
      * Get the current fully downloaded and unpacked content version.
      */
-    public String getVersion() {
+    public String getContentVersion() {
         return subLocals.getString("version");
+    }
+    
+    /**
+     * Initialize the subscription by ensuring that the initial version is downloaded
+     * or unpacked.
+     */
+    public void initialize(final ContentListener listener) {
+        if( subLocals.getBoolean("initialized", false ) ) {
+            final String sourceZip = subLocals.getString("sourceZip");
+            if( sourceZip != null ) {
+                // Path to a source zip file found. This indicates a previous unpack process
+                // that was interrupted, so try to resume the operation.
+                BackgroundTaskRunner.run(new BackgroundTaskRunner.Task() {
+                    @Override
+                    public void run() {
+                        unpackContent( new File( sourceZip ), true );
+                        listener.onContentRefresh();
+                    }
+                });
+            }
+            else {
+                // Subscription initialized and fully unpacked, so nothing to do.
+                listener.onContentRefresh();
+            }
+        }
+        else if( initialContent instanceof FileResource ) {
+            // Subscription not initialized and initial content is specified; so unpack the content
+            // before attempting a refresh from the server.
+            Log.d( Tag, String.format("Unpacking initial content from %s", initialContent ) );
+            BackgroundTaskRunner.run(new BackgroundTaskRunner.Task() {
+                @Override
+                public void run() {
+                    File zipFile = ((FileResource)initialContent).asFile();
+                    // Unpack the initial content.
+                    Subscription.this.unpackContent( zipFile, false );
+                    // Mark content as initialized.
+                    subLocals.setBoolean("initialized", true );
+                    // Then try a refresh.
+                    Subscription.this.refresh( listener );
+                }
+            });
+        }
+        else {
+            // Subscription not initialized and no initial content specified, so request content
+            // from the server.
+            Log.d( Tag, "Downloading initial content");
+            refresh(new ContentListener() {
+                @Override
+                public void onContentRefresh() {
+                    // Mark content as initialized.
+                    subLocals.setBoolean("initialized", true );
+                    // Notify the listener.
+                    listener.onContentRefresh();
+                }
+            });
+        }
     }
     
     /**
@@ -101,7 +171,7 @@ public class Subscription {
      * allows it.
      * @param listener A refresh listener; notified once the refresh has fully completed.
      */
-    public void refresh(ContentRefreshListener listener) {
+    public void refresh(ContentListener listener) {
         // Add the listener to the list of listeners.
         if( refreshListeners != null ) {
             // A non-null listener list means that a refresh is in progress; so add the
@@ -113,7 +183,7 @@ public class Subscription {
             return;
         }
         // Starting a new refresh.
-        refreshListeners = new ArrayList<ContentRefreshListener>();
+        refreshListeners = new ArrayList<ContentListener>();
         if( listener != null ) {
             refreshListeners.add( listener );
         }
@@ -152,7 +222,7 @@ public class Subscription {
             }
         }
     }
-
+    
     /**
      * Start the download process.
      * If a previous, interrupted, download is detected then resume that; otherwise
@@ -169,7 +239,7 @@ public class Subscription {
             checkForUpdates();
         }
     }
-
+    
     /**
      * Resume an interrupted download.
      */
@@ -189,7 +259,7 @@ public class Subscription {
             checkForUpdates();
         }
     }
-
+    
     /**
      * Check for updated content.
      */
@@ -238,7 +308,7 @@ public class Subscription {
             Subscription.this.finishDownload();
         }
     }
-
+    
     /**
      * Download a content update.
      * @param contentURL    The URL of a zip file containing the update.
@@ -261,7 +331,7 @@ public class Subscription {
             Log.w( Tag, String.format("Bad content URL: %s", contentURL ));
         }
     }
-
+    
     /**
      * Cleanup after a download.
      */
@@ -273,15 +343,15 @@ public class Subscription {
         subLocals.remove("url","filename","status");
         refreshComplete();
     }
-
+    
     /**
      * End of refresh process.
      */
     protected void refreshComplete() {
         // Clear the refresh listener list and notify all listeners on the list.
-        List<ContentRefreshListener> listeners = refreshListeners;
+        List<ContentListener> listeners = refreshListeners;
         refreshListeners = null;
-        for(ContentRefreshListener listener : listeners) {
+        for(ContentListener listener : listeners) {
             listener.onContentRefresh();
         }
     }
@@ -296,6 +366,8 @@ public class Subscription {
     @SuppressWarnings("unchecked")
     public void unpackContent(File sourceZipFile, boolean resume) {
         try {
+            // Start by storing the full path of the source zip file.
+            subLocals.setString("sourceZip", sourceZipFile.getAbsolutePath() );
             // Check for an unpack status left over from a previous interrupted process.
             String unpackStatus = subLocals.getString("unpackStatus");
             // In no unpack status found...
@@ -506,14 +578,16 @@ public class Subscription {
             }
             
             // Remove process state.
-            subLocals.remove("postUnpackIndex");
-            subLocals.remove("unpackStatus");
+            subLocals.remove("postUnpackIndex","unpackStatus","sourceZip");
+            
             // Delete the version manifest.
             if( !versionManifestFile.delete() ) {
                 Log.w( Tag, String.format("Failed to delete version manifest at %s", versionManifestFile ) );
             }
         }
         catch(Exception e) {
+            // TODO: Need to review the implications of doing the following ops, and their impact on whatever
+            // process called this method.
             // Lock the subscription.
             manager.lockSubscription( name, true );
             // Remove subscription content dir

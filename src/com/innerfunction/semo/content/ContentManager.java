@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+
 import android.annotation.SuppressLint;
 import android.content.Context;
 
@@ -14,28 +15,41 @@ import com.innerfunction.semo.core.Configuration;
 import com.innerfunction.util.FileIO;
 import com.innerfunction.util.Locals;
 
+/**
+ * Class responsible for managing one or more content subscriptions.
+ * TODO: Subs should notify list of updated file paths.
+ * @author juliangoacher
+ */
 @SuppressLint("DefaultLocale")
-public class SubscriptionManager {
-
-    // Configure subs + manager
-    // Subs initialization options (unpack from zip; mirror app fs; download content)
-    // Subs refresh options (push/periodic/none)
-    // Subs refresh options (all subs sequential/parallel)
-    // Subs manual refresh
+public class ContentManager {
     
-    static enum InitMethod { Unpack, MirrorFS, Download };
-    static enum RefreshMethod { Push, Periodic, Manual, None };
-    
+    /**
+     * The directory containing subscription content.
+     */
     private File contentDir;
+    /**
+     * The directory containing downloaded content files.
+     */
     private File downloadDir;
+    /**
+     * Local content settings.
+     */
     private Locals localSettings;
+    /**
+     * The server URL content updates are downloaded from.
+     */
     private String subscriptionURL;
-    private String defaultInitMethod;
-    private String defaultRefreshMethod;
+    /**
+     * Array of processes that operate on unpacked content.
+     */
     private ArrayList<SubscriptionUnpackListener> subscriptionUnpackListeners;
+    /**
+     * A map of content subscriptions, keyed by subscription name.
+     */
     private Map<String,Subscription> subscriptions;
     
-    public SubscriptionManager(Configuration configuration, ComponentFactory componentFactory, Context androidContext) throws Exception {
+    public ContentManager(Configuration configuration, ComponentFactory componentFactory, Context androidContext) throws Exception {
+        // Setup content directories.
         File cacheDir = new File( FileIO.getCacheDir( androidContext ), "semo");
         contentDir = new File( cacheDir, "content");
         if( !(contentDir.exists() || contentDir.mkdirs()) ) {
@@ -46,24 +60,24 @@ public class SubscriptionManager {
             throw new Exception( String.format("Unable to create download directory: %s", downloadDir.getAbsolutePath() ) );
         }
         localSettings = new Locals("semo.subs");
-        
+        // Read subscription URL.
         subscriptionURL = configuration.getValueAsString("url");
         if( subscriptionURL == null ) {
             throw new Exception("No subscription URL defined in configuration");
         }
-        
+        // Instantiate subscriptions.
         subscriptions = new HashMap<String,Subscription>();
         Map<String,Configuration> subsConfigs = configuration.getValueAsConfigurationMap("subscriptions");
         for(String name : subsConfigs.keySet() ) {
-            Configuration subsConfig = subsConfigs.get( name );
             Subscription subs = new Subscription( name, this, androidContext );
+            subs.configure( subsConfigs.get( name ) );
             subscriptions.put( name, subs );
         }
-        
+        // Make unpack listeners (processes that are called after a subscription is unpacked).
         subscriptionUnpackListeners = new ArrayList<SubscriptionUnpackListener>();
         List<Configuration> unpackListenerConfigs = configuration.getValueAsConfigurationList("subscriptionUnpackListeners");
         int idx = 0;
-        for(Configuration unpackListenerConfig : unpackListenerConfigs ) {
+        for( Configuration unpackListenerConfig : unpackListenerConfigs ) {
             String id = String.format("subscriptionUnpackListeners[%d]", idx++ );
             try {
                 SubscriptionUnpackListener listener = (SubscriptionUnpackListener)componentFactory.makeComponent( unpackListenerConfig, id );
@@ -73,7 +87,23 @@ public class SubscriptionManager {
                 throw new Exception( String.format("%s is not an instance of SubscriptionUnpackListener", id ) );
             }
         }
-        
+    }
+    
+    /**
+     * Initialize content by initializing all subscriptions.
+     * @param listener The content listener is called after all subscriptions have initialized.
+     */
+    public void initialize(final ContentListener listener) {
+        // Iterate over all subscription names.
+        final Iterator<String> names = subscriptions.keySet().iterator();
+        // Loop over the names and initialize each subscription.
+        ContentListenerIteratorLoop.loop( names, new ContentListenerIteratorLoop.IterationOp<String>() {
+            @Override
+            public void iteration(String name, ContentListener listener) {
+                Subscription subs = subscriptions.get( name );
+                subs.initialize( listener );
+            }
+        }, listener);
     }
     
     public Locals getLocalSettings() {
@@ -106,7 +136,7 @@ public class SubscriptionManager {
      * @param listener  A refresh listener; its onContentRefresh method is called once
      *                  the refresh has fully completed.
      */
-    public void refreshSubscription(String name, ContentRefreshListener listener) {
+    public void refreshSubscription(String name, ContentListener listener) {
         Subscription subs = subscriptions.get( name );
         if( subs != null ) {
             subs.refresh( listener );
@@ -127,32 +157,16 @@ public class SubscriptionManager {
      * @param listener A refresh listener; its onContentRefresh method is called once all
      *                 subscriptions have fully refreshed.
      */
-    public void refreshAllSubscriptions(final ContentRefreshListener listener) {
+    public void refreshAllSubscriptions(final ContentListener listener) {
         // Iterate over all subscription names.
         final Iterator<String> names = subscriptions.keySet().iterator();
-        // Create a refresh listener as a loop controller; it waits for a refresh to complete
-        // before continuing with the next refresh.
-        ContentRefreshListener loop = new ContentRefreshListener() {
+        // Loop over the names and refresh each subscription.
+        ContentListenerIteratorLoop.loop( names, new ContentListenerIteratorLoop.IterationOp<String>() {
             @Override
-            public void onContentRefresh() {
-                // If still subscription names...
-                if( names.hasNext() ) {
-                    // ...then refresh the next subscription.
-                    String name = names.next();
-                    // Pass this as the refresh listener so that this method is called again
-                    // once the refresh is complete.
-                    refreshSubscription( name, this );
-                }
-                else {
-                    // All names seen, so call the caller's listener, if any.
-                    if( listener != null ) {
-                        listener.onContentRefresh();
-                    }
-                }
+            public void iteration(String name, ContentListener listener) {
+                refreshSubscription( name, listener );
             }
-        };
-        // Start the loop by calling the refresh method.
-        loop.onContentRefresh();
+        }, listener);
     }
 
     public void resetSubscriptionContent(Subscription subs) {
