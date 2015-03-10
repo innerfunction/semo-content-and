@@ -15,31 +15,33 @@ public class SubscriptionManager {
     // Subs manual refresh
     
     private ArrayList<PostUnpackListener> postUnpackListeners;
+    private File contentDir;
+    private File downloadDir;
+    private Locals localSettings;
+    
+    public SubscriptionManager() {
+        localSettings = new Locals("semo.subs");
+    }
     
     // Rename to getLocalSettings()
-    public Locals getSettings() {
-        return null;
+    public Locals getLocalSettings() {
+        return localSettings;
     }
     
     public File getContentDir() {
-        return null;
+        return contentDir;
     }
     
     public File getDownloadDir() {
-        return null;
+        return downloadDir;
     }
     
     public String getSubscriptionURL() {
         return null;
     }
     
-    // Rename to resetSubscriptionContent ?
-    public void unpackBaseContentForSubscription(Subscription subs) {
+    public void resetSubscriptionContent(Subscription subs) {
         
-    }
-    
-    public List<PostUnpackListener> getPostUnpackListeners() {
-        return postUnpackListeners;
     }
     
     /**
@@ -49,5 +51,9 @@ public class SubscriptionManager {
      */
     protected void lockSubscription(String name, boolean locked) {
         
+    }
+    
+    public List<PostUnpackListener> getPostUnpackListeners() {
+        return postUnpackListeners;
     }
 }

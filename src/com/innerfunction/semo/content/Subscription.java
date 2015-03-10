@@ -74,7 +74,7 @@ public class Subscription {
         }
         contentDir = new File( manager.getContentDir(), name );
         subLocals = new Locals( String.format("semo.subs.%s", name ) );
-        generalLocals = manager.getSettings();
+        generalLocals = manager.getLocalSettings();
     }
     
     /**
@@ -485,7 +485,7 @@ public class Subscription {
             // Remove subscription content dir
             FileIO.removeDir( contentDir, context );
             // Unpack base content.
-            manager.unpackBaseContentForSubscription( this );
+            manager.resetSubscriptionContent( this );
             // Unlock subscription.
             manager.lockSubscription( name, false );
             // Request full content update.
