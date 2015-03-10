@@ -4,6 +4,7 @@ import java.io.File;
 import java.net.MalformedURLException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -56,11 +57,14 @@ public class Subscription {
         public void receivedFile(File file) {
             Subscription.this.unpackContent( file, false );
             Subscription.this.finishDownload();
-            if( !file.delete() ) {
-                Log.w( Tag, String.format("Failed to delete download file at %s", file ) );
-            }
         }
     };
+    /**
+     * An array of refresh listeners.
+     * If this is null then it means that no refresh is in progress. If it is non-null then
+     * it will contain one or more listeners. All listeners are notified once a refresh completes.
+     */
+    private List<ContentRefreshListener> refreshListeners;
     
     public Subscription(String name, SubscriptionManager manager, Context context) {
         this.name = name;
@@ -95,13 +99,30 @@ public class Subscription {
      * Refresh the subscription's content.
      * Checks the general download policy, and attempts to download an update if the policy
      * allows it.
+     * @param listener A refresh listener; notified once the refresh has fully completed.
      */
-    public void refresh() {
+    public void refresh(ContentRefreshListener listener) {
+        // Add the listener to the list of listeners.
+        if( refreshListeners != null ) {
+            // A non-null listener list means that a refresh is in progress; so add the
+            // new listener to the list and return immediately, the listener will be
+            // notified when the refresh completes.
+            if( listener != null ) {
+                refreshListeners.add( listener );
+            }
+            return;
+        }
+        // Starting a new refresh.
+        refreshListeners = new ArrayList<ContentRefreshListener>();
+        if( listener != null ) {
+            refreshListeners.add( listener );
+        }
+        // Check the download policy.
         String downloadPolicy = generalLocals.getString("downloadPolicy", null );
         Log.i( Tag, String.format("downloadPolicy=%s", downloadPolicy) );
         if( "never".equals( downloadPolicy ) ) {
             // Downloads disabled
-            return;
+            refreshComplete();
         }
         // Check connectivity.
         ConnectivityManager cm = (ConnectivityManager)context.getSystemService( Context.CONNECTIVITY_SERVICE );
@@ -229,7 +250,7 @@ public class Subscription {
             downloadFile.delete();
         }
         // Setup the download file path. This is placed in the app's tmp directory.
-        String filename = String.format("_semo_content_%s.zip", name );
+        String filename = String.format("%s.zip", name );
         downloadFile = new File( manager.getDownloadDir(), filename );
         subLocals.setString("downloadFile", downloadFile.getAbsolutePath() );
         // Send download request.
@@ -250,8 +271,21 @@ public class Subscription {
             downloadFile = null;
         }
         subLocals.remove("url","filename","status");
+        refreshComplete();
     }
 
+    /**
+     * End of refresh process.
+     */
+    protected void refreshComplete() {
+        // Clear the refresh listener list and notify all listeners on the list.
+        List<ContentRefreshListener> listeners = refreshListeners;
+        refreshListeners = null;
+        for(ContentRefreshListener listener : listeners) {
+            listener.onContentRefresh();
+        }
+    }
+    
     /**
      * Unpack subscription content.
      * Unpacks a content update from a content zip file.
@@ -459,14 +493,14 @@ public class Subscription {
             
             if("post-unpack".equals( unpackStatus ) ) {
                 // Notify all post-update listeners registered with the subs manager.
-                List<PostUnpackListener> postUnpackListeners = manager.getPostUnpackListeners();
+                List<SubscriptionUnpackListener> subsUnpackListeners = manager.getSubscriptionUnpackListeners();
                 // Set a pointer on the listener being processed. If a previous post-unpack process
                 // was interrupted then this will pickup from that point.
                 int postUnpackIndex = subLocals.getInt("postUnpackIndex", 0 );
-                int postUnpackCount = postUnpackListeners.size();
+                int postUnpackCount = subsUnpackListeners.size();
                 while( postUnpackIndex < postUnpackCount ) {
-                    PostUnpackListener listener = postUnpackListeners.get( postUnpackIndex );
-                    listener.onPostUnpack( this );
+                    SubscriptionUnpackListener listener = subsUnpackListeners.get( postUnpackIndex );
+                    listener.onSubscriptionUnpack( this );
                     postUnpackCount = subLocals.setInt("postUnpackIndex", postUnpackIndex + 1 );
                 }
             }
@@ -489,7 +523,7 @@ public class Subscription {
             // Unlock subscription.
             manager.lockSubscription( name, false );
             // Request full content update.
-            refresh();
+            refresh( null );
         }
     }
     
