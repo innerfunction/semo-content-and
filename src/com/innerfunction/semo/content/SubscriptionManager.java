@@ -6,8 +6,15 @@ import java.util.List;
 
 public class SubscriptionManager {
 
+    // Configure subs + manager
+    // Subs initialization options (unpack from zip; mirror app fs; download content)
+    // Subs refresh options (push/periodic/none)
+    // Subs refresh options (all subs sequential/parallel)
+    // Subs manual refresh
+    
     private ArrayList<PostUnpackListener> postUnpackListeners;
     
+    // Rename to getLocalSettings()
     public Locals getSettings() {
         return null;
     }
@@ -24,6 +31,7 @@ public class SubscriptionManager {
         return null;
     }
     
+    // Rename to resetSubscriptionContent ?
     public void unpackBaseContentForSubscription(Subscription subs) {
         
     }

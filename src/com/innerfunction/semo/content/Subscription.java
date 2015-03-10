@@ -76,8 +76,18 @@ public class Subscription {
         generalLocals = manager.getSettings();
     }
     
+    /**
+     * Get the subscription's content directory.
+     */
     public File getContentDir() {
         return contentDir;
+    }
+    
+    /**
+     * Get the current fully downloaded and unpacked content version.
+     */
+    public String getVersion() {
+        return subLocals.getString("version");
     }
     
     /**
@@ -207,6 +217,10 @@ public class Subscription {
         }
     }
 
+    /**
+     * Download a content update.
+     * @param contentURL    The URL of a zip file containing the update.
+     */
     protected void downloadContent(String contentURL) {
         subLocals.setString("contentURL", contentURL );
         // Delete any previous download file.
@@ -226,6 +240,9 @@ public class Subscription {
         }
     }
 
+    /**
+     * Cleanup after a download.
+     */
     protected void finishDownload() {
         if( downloadFile != null ) {
             downloadFile.delete();
@@ -284,7 +301,7 @@ public class Subscription {
             if("patch".equals( unpackStatus ) ) {
                 // Apply patched updates to previous content.
                 // Create a reference to a temporary file for holding patch results.
-                File patchTempFile = new File( semoDir, "patch.temp");
+                File tempPatchFile = new File( semoDir, "patch.temp");
                 // Read the list of file patches from the version manifest.
                 List<Object> patches = (List<Object>)versionManifest.get("patches");
                 // Set a pointer on the current patch. If a previous patch process was interrupted then this
@@ -293,9 +310,9 @@ public class Subscription {
                 // A map containing info about the current file patch.
                 Map<String,Object> patch;
                 // The target file being patched.
-                File patchFile;
+                File targetFile;
                 // The target file's contents.
-                String patchFileContents;
+                String targetFileContents;
                 // The object for applying patches to file contents.
                 diff_match_patch patcher = new diff_match_patch();
                 // The total number of patches to apply.
@@ -306,57 +323,68 @@ public class Subscription {
                     // Get the current patch.
                     patch = (Map<String,Object>)patches.get( patchIndex );
                     // Reference the patch target file.
-                    patchFile = new File( contentDir, (String)patch.get("file") );
+                    targetFile = new File( contentDir, (String)patch.get("file") );
                     // If the target file doesn't exist then it must have been deleted before the previous
                     // patch process was interrupted...
-                    if( !patchFile.exists() ) {
+                    if( !targetFile.exists() ) {
                         // If the patch temporary file exists then the target file was deleted and the process
                         // stopped before the the temp file could be moved to replace the target file.
-                        if( patchTempFile.exists() ) {
-                            // Move the temp file - the patch is then completed.
-                            if( !patchTempFile.renameTo( patchFile ) ) {
-                                throw new Exception( String.format("Failed to move patch.temp to %s when patching", patchFile ) );
+                        if( tempPatchFile.exists() ) {
+                            // Perform a hash of the temporary patch file's contents.
+                            String patchTempFileContents = FileIO.readString( tempPatchFile, ContentTextEncoding );
+                            CharSequence hash = md5Hash( patchTempFileContents );
+                            // If the hash matches the expected after state then go ahead and complete the patch op.
+                            if( hash.equals( patch.get("after") ) ) {
+                                // Move the temp file - the patch is then completed.
+                                if( !tempPatchFile.renameTo( targetFile ) ) {
+                                    throw new Exception( String.format("Failed to move patch.temp when attempting to recover patch to %s",
+                                            targetFile ) );
+                                }
+                            }
+                            else {
+                                // Unexpected patch state; can't recover so fatal error.
+                                throw new Exception( String.format("Bad after state when attempring to recover patch to %s", targetFile ) );
                             }
                         }
                         else {
                             // If no patch target and no patch temp file then something odd has happened, and we can't
                             // recover so this is a fatal error.
-                            throw new Exception( String.format("Broken patch on %s", patchFile ) );
+                            throw new Exception( String.format("Broken patch on %s", targetFile ) );
                         }
                     }
                     else {
                         // Read the patch target's contents.
-                        patchFileContents = FileIO.readString( patchFile, ContentTextEncoding );
+                        targetFileContents = FileIO.readString( targetFile, ContentTextEncoding );
                         // Check the MD5 hash of the file contents.
-                        CharSequence hash = md5Hash( patchFileContents );
+                        CharSequence hash = md5Hash( targetFileContents );
                         // Test whether the hash matches the pre-patch state.
-                        if( hash.equals( patch.get("beforeHash") ) ) {
+                        if( hash.equals( patch.get("before") ) ) {
                             // Patch was interrupted before it could be applied, so apply patches to the target.
                             LinkedList<Patch> filePatches = patcher.patch_fromText( (String)patch.get("patches") );
-                            patchFileContents = (String)patcher.patch_apply( filePatches, patchFileContents )[0];
+                            targetFileContents = (String)patcher.patch_apply( filePatches, targetFileContents )[0];
                             // Validate post-patch state using MD5 hash.
-                            hash = md5Hash( patchFileContents );
+                            hash = md5Hash( targetFileContents );
                             if( !hash.equals( patch.get("after") ) ) {
                                 // Post-patch state is invalid, so fatal error.
-                                throw new Exception( String.format("Inconsistent post-patch state for %s", patchFile ) );
+                                throw new Exception( String.format("Inconsistent post-patch state for %s", targetFile ) );
                             }
                             // Write patched content to temporary file.
-                            if( !FileIO.writeString( patchTempFile, patchFileContents ) ) {
-                                throw new Exception( String.format("Failed to write patch.temp when patching %s", patchFile ) );
+                            if( !FileIO.writeString( tempPatchFile, targetFileContents ) ) {
+                                throw new Exception( String.format("Failed to write patch.temp when patching %s", targetFile ) );
                             }
                             // Delete the patch target.
-                            if( !patchFile.delete() ) {
-                                throw new Exception( String.format("Failed to remove %s when patching", patchFile ) );
+                            if( !targetFile.delete() ) {
+                                throw new Exception( String.format("Failed to remove %s when patching", targetFile ) );
                             }
                             // Move the temporary file to the patch target.
-                            if( !patchTempFile.renameTo( patchFile ) ) {
-                                throw new Exception( String.format("Failed to move patch.temp to %s when patching", patchFile ) );
+                            if( !tempPatchFile.renameTo( targetFile ) ) {
+                                throw new Exception( String.format("Failed to move patch.temp to %s when patching", targetFile ) );
                             }
                         }
                         else if( !hash.equals( patch.get("after") ) ) {
                             // Target file state doesn't match either the pre- or post-patch state, so something odd
                             // has happened; can't recover from this, so fatal error.
-                            throw new Exception( String.format("Inconsistent post-patch state for %s", patchFile ) );
+                            throw new Exception( String.format("Inconsistent post-patch state for %s", targetFile ) );
                         }
                         // Else file was fully patched before interruption, nothing more to do.
                     }
@@ -373,36 +401,36 @@ public class Subscription {
                     // Read the patch object.
                     patch = (Map<String,Object>)patches.get( patchIndex );
                     // Check that the patch target exists.
-                    patchFile = new File( contentDir, (String)patch.get("file") );
-                    if( !patchFile.exists() ) {
-                        throw new Exception( String.format("Patch target not found: %s", patchFile ) );
+                    targetFile = new File( contentDir, (String)patch.get("file") );
+                    if( !targetFile.exists() ) {
+                        throw new Exception( String.format("Patch target not found: %s", targetFile ) );
                     }
                     // Read the patch target's contents.
-                    patchFileContents = FileIO.readString( patchFile, ContentTextEncoding );
+                    targetFileContents = FileIO.readString( targetFile, ContentTextEncoding );
                     // Validate using MD5 hash that patch content is correct.
-                    CharSequence hash = md5Hash( patchFileContents );
+                    CharSequence hash = md5Hash( targetFileContents );
                     if( !hash.equals( patch.get("before") ) ) {
-                        throw new Exception( String.format("Inconsistent pre-patch state for %s", patchFile ) );
+                        throw new Exception( String.format("Inconsistent pre-patch state for %s", targetFile ) );
                     }
                     // Apply patches to the patch target.
                     LinkedList<Patch> filePatches = patcher.patch_fromText( (String)patch.get("patches") );
-                    patchFileContents = (String)patcher.patch_apply( filePatches, patchFileContents )[0];
+                    targetFileContents = (String)patcher.patch_apply( filePatches, targetFileContents )[0];
                     // Validate post-patch state using MD5 hash.
-                    hash = md5Hash( patchFileContents );
+                    hash = md5Hash( targetFileContents );
                     if( !hash.equals( patch.get("after") ) ) {
-                        throw new Exception( String.format("Inconsistent post-patch state for %s", patchFile ) );
+                        throw new Exception( String.format("Inconsistent post-patch state for %s", targetFile ) );
                     }
                     // Write patched content to temporary file.
-                    if( !FileIO.writeString( patchTempFile, patchFileContents ) ) {
-                        throw new Exception( String.format("Failed to write patch.temp when patching %s", patchFile ) );
+                    if( !FileIO.writeString( tempPatchFile, targetFileContents ) ) {
+                        throw new Exception( String.format("Failed to write patch.temp when patching %s", targetFile ) );
                     }
                     // Delete the patch target.
-                    if( !patchFile.delete() ) {
-                        throw new Exception( String.format("Failed to remove %s when patching", patchFile ) );
+                    if( !targetFile.delete() ) {
+                        throw new Exception( String.format("Failed to remove %s when patching", targetFile ) );
                     }
                     // Move the temporary file to the patch target.
-                    if( !patchTempFile.renameTo( patchFile ) ) {
-                        throw new Exception( String.format("Failed to move patch.temp to %s when patching", patchFile ) );
+                    if( !tempPatchFile.renameTo( targetFile ) ) {
+                        throw new Exception( String.format("Failed to move patch.temp to %s when patching", targetFile ) );
                     }
                     // Iterate to next patch.
                     patchIndex = subLocals.setInt("patchIndex", patchIndex + 1 );
@@ -422,11 +450,6 @@ public class Subscription {
                     if( !deleteFile.delete() ) {
                         throw new Exception( String.format("Unable to delete file %s", deleteFile ) );
                     }
-                }
-                
-                // TODO: Are there cases where the zip file shouldn't be deleted? Or leave to subs manager?
-                if( !sourceZipFile.delete() ) {
-                    // TODO: Is this a fatal error?
                 }
                 
                 subLocals.setString("version", newVersion );
@@ -479,7 +502,7 @@ public class Subscription {
         md.update( contents.getBytes() );
         byte[] digest = md.digest();
         StringBuilder hex = new StringBuilder();
-        for (int i = 0; i < digest.length; i++) {
+        for( int i = 0; i < digest.length; i++ ) {
             hex.append( Integer.toString( ( digest[i] & 0xff ) + 0x100, 16 ).substring( 1 ) );
         }
         return hex;
