@@ -18,6 +18,7 @@ import android.util.Log;
 
 import com.innerfunction.util.FileIO;
 import com.innerfunction.util.HTTPUtils;
+import com.innerfunction.util.Locals;
 import com.innerfunction.util.StringTemplate;
 
 /**
