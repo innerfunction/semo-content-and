@@ -17,8 +17,8 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.util.Log;
 
-import com.innerfunction.semo.core.Component;
-import com.innerfunction.semo.core.Configuration;
+import com.innerfunction.semo.Component;
+import com.innerfunction.semo.Configuration;
 import com.innerfunction.uri.FileResource;
 import com.innerfunction.uri.Resource;
 import com.innerfunction.util.BackgroundTaskRunner;

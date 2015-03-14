@@ -10,8 +10,8 @@ import java.util.Map;
 import android.annotation.SuppressLint;
 import android.content.Context;
 
-import com.innerfunction.semo.core.ComponentFactory;
-import com.innerfunction.semo.core.Configuration;
+import com.innerfunction.semo.ComponentFactory;
+import com.innerfunction.semo.Configuration;
 import com.innerfunction.util.FileIO;
 import com.innerfunction.util.Locals;
 
