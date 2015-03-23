@@ -27,7 +27,7 @@ public class ContentRefreshPushMessageHandler implements Component, PushMessageH
             contentManager.refreshSubscription( subName );
         }
         else {
-            // Prompt user to download
+            // TODO: Prompt user to download
         }
         return false;
     }
