@@ -12,8 +12,6 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.util.Log;
 
-import com.innerfunction.semo.Component;
-import com.innerfunction.semo.Configuration;
 import com.innerfunction.uri.FileResource;
 import com.innerfunction.uri.Resource;
 import com.innerfunction.util.BackgroundTaskRunner;
@@ -26,7 +24,7 @@ import com.innerfunction.util.StringTemplate;
  * Downloads content updates and unpacks them to the device's local file system.
  * @author juliangoacher
  */
-public class Subscription implements Component {
+public class Subscription {
 
     static final String Tag = Subscription.class.getSimpleName();
     
@@ -68,18 +66,29 @@ public class Subscription implements Component {
      */
     private List<ContentListener> refreshListeners;
     
-    public Subscription(String name, ContentManager manager, Context context) {
+    public Subscription(Context context) {
+        this.context = context;
+    }
+    
+    /**
+     * Ready the subscription for use with a content manager.
+     * @param manager   The manager to use the sub with.
+     * @param name      The name the sub is registered with the manager under.
+     */
+    public void setup(ContentManager manager, String name) {
         this.name = name;
         this.manager = manager;
-        this.context = context;
         contentDir = new File( manager.getContentDir(), name );
         subLocals = new Locals( String.format("semo.subs.%s", name ) );
         generalLocals = manager.getLocalSettings();
         unpacker = new ContentUnpacker( context, manager );
     }
     
-    public void configure(Configuration config) {
-        initialContent = config.getValueAsResource("initialContent");
+    /**
+     * Set the subscription's initial content resource.
+     */
+    public void setInitialContent(Resource rsc) {
+        initialContent = rsc;
     }
     
     /**
@@ -130,6 +139,8 @@ public class Subscription implements Component {
             }
             else {
                 // Subscription initialized and fully unpacked, so nothing to do.
+                // Mark content as initialized.
+                subLocals.setBoolean("initialized", true );
                 listener.onContentRefresh();
             }
         }

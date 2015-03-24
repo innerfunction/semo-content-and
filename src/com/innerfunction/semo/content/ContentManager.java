@@ -1,7 +1,6 @@
 package com.innerfunction.semo.content;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -9,9 +8,8 @@ import java.util.Map;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.util.Log;
 
-import com.innerfunction.semo.ComponentFactory;
-import com.innerfunction.semo.Configuration;
 import com.innerfunction.util.FileIO;
 import com.innerfunction.util.Locals;
 
@@ -22,6 +20,8 @@ import com.innerfunction.util.Locals;
  */
 @SuppressLint("DefaultLocale")
 public class ContentManager {
+    
+    static final String Tag = ContentManager.class.getSimpleName();
     
     /**
      * The directory containing subscription content.
@@ -42,68 +42,62 @@ public class ContentManager {
     /**
      * Array of processes that operate on unpacked content.
      */
-    private ArrayList<SubscriptionUnpackListener> subscriptionUnpackListeners;
+    private List<SubscriptionUnpackListener> subscriptionUnpackListeners;
     /**
      * A map of content subscriptions, keyed by subscription name.
      */
-    private Map<String,Subscription> subscriptions;
+    private Map<String,Subscription> subscriptions = new HashMap<String,Subscription>();
     
-    public ContentManager(Configuration configuration, ComponentFactory componentFactory, Context androidContext) throws Exception {
+    public ContentManager(Context androidContext) {
         // Setup content directories.
         File cacheDir = new File( FileIO.getCacheDir( androidContext ), "semo");
         contentDir = new File( cacheDir, "content");
         if( !(contentDir.exists() || contentDir.mkdirs()) ) {
-            throw new Exception( String.format("Unable to create content directory: %s", contentDir.getAbsolutePath() ) );
+            Log.e( Tag, String.format("Unable to create content directory: %s", contentDir.getAbsolutePath() ) );
         }
         downloadDir = new File( cacheDir, "download");
         if( !(downloadDir.exists() || downloadDir.mkdirs()) ) {
-            throw new Exception( String.format("Unable to create download directory: %s", downloadDir.getAbsolutePath() ) );
+            Log.e( Tag, String.format("Unable to create download directory: %s", downloadDir.getAbsolutePath() ) );
         }
         localSettings = new Locals("semo.subs");
-        // Read subscription URL.
-        subscriptionURL = configuration.getValueAsString("url");
-        if( subscriptionURL == null ) {
-            throw new Exception("No subscription URL defined in configuration");
+    }
+    
+    public void setSubscriptionURL(String url) {
+        subscriptionURL = url;
+    }
+    
+    public void setSubscriptions(Map<String,Subscription> subs) {
+        for( String name : subs.keySet() ) {
+            Subscription sub = subs.get( name );
+            sub.setup( this, name );
         }
-        // Instantiate subscriptions.
-        subscriptions = new HashMap<String,Subscription>();
-        Map<String,Configuration> subsConfigs = configuration.getValueAsConfigurationMap("subscriptions");
-        for(String name : subsConfigs.keySet() ) {
-            Subscription subs = new Subscription( name, this, androidContext );
-            subs.configure( subsConfigs.get( name ) );
-            subscriptions.put( name, subs );
-        }
-        // Make unpack listeners (processes that are called after a subscription is unpacked).
-        subscriptionUnpackListeners = new ArrayList<SubscriptionUnpackListener>();
-        List<Configuration> unpackListenerConfigs = configuration.getValueAsConfigurationList("subscriptionUnpackListeners");
-        int idx = 0;
-        for( Configuration unpackListenerConfig : unpackListenerConfigs ) {
-            String id = String.format("subscriptionUnpackListeners[%d]", idx++ );
-            try {
-                SubscriptionUnpackListener listener = (SubscriptionUnpackListener)componentFactory.makeComponent( unpackListenerConfig, id );
-                subscriptionUnpackListeners.add( listener );
-            }
-            catch(ClassCastException e) {
-                throw new Exception( String.format("%s is not an instance of SubscriptionUnpackListener", id ) );
-            }
-        }
+        subscriptions.putAll( subs );
+    }
+    
+    public void setSubscriptionUnpackListeners(List<SubscriptionUnpackListener> listeners) {
+        subscriptionUnpackListeners = listeners;
     }
     
     /**
      * Initialize content by initializing all subscriptions.
      * @param listener The content listener is called after all subscriptions have initialized.
      */
-    public void initialize(final ContentListener listener) {
-        // Iterate over all subscription names.
-        final Iterator<String> names = subscriptions.keySet().iterator();
-        // Loop over the names and initialize each subscription.
-        ContentListenerIteratorLoop.loop( names, new ContentListenerIteratorLoop.IterationOp<String>() {
-            @Override
-            public void iteration(String name, ContentListener listener) {
-                Subscription subs = subscriptions.get( name );
-                subs.initialize( listener );
-            }
-        }, listener);
+    public void initialize(final ContentListener listener) throws Exception {
+        if( subscriptionURL == null ) {
+            throw new Exception("No subscription URL defined in configuration");
+        }
+        if( subscriptions != null ) {
+            // Iterate over all subscription names.
+            final Iterator<String> names = subscriptions.keySet().iterator();
+            // Loop over the names and initialize each subscription.
+            ContentListenerIteratorLoop.loop( names, new ContentListenerIteratorLoop.IterationOp<String>() {
+                @Override
+                public void iteration(String name, ContentListener listener) {
+                    Subscription subs = subscriptions.get( name );
+                    subs.initialize( listener );
+                }
+            }, listener);
+        }
     }
     
     public Locals getLocalSettings() {
