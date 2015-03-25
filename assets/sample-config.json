@@ -1,0 +1,16 @@
+{
+    "type": "ContentManager",
+    "subscriptionURL": "",
+    "contentUnpackListeners": [
+        {
+            "type": "DBManifestProcessor",
+            "manifest": "db.json"
+        }
+    ],
+    "subscriptions": {
+        "name": {
+            "type": "Subscription",
+            "initialContent": "@app:/subs/name.zip"
+        }
+    }
+}

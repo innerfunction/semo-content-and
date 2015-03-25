@@ -42,7 +42,7 @@ public class ContentManager {
     /**
      * Array of processes that operate on unpacked content.
      */
-    private List<SubscriptionUnpackListener> subscriptionUnpackListeners;
+    private List<ContentUnpackListener> contentUnpackListeners;
     /**
      * A map of content subscriptions, keyed by subscription name.
      */
@@ -74,10 +74,14 @@ public class ContentManager {
         subscriptions.putAll( subs );
     }
     
-    public void setSubscriptionUnpackListeners(List<SubscriptionUnpackListener> listeners) {
-        subscriptionUnpackListeners = listeners;
+    public void setContentUnpackListeners(List<ContentUnpackListener> listeners) {
+        contentUnpackListeners = listeners;
     }
     
+    public List<ContentUnpackListener> getContentUnpackListeners() {
+        return contentUnpackListeners;
+    }
+
     /**
      * Initialize content by initializing all subscriptions.
      * @param listener The content listener is called after all subscriptions have initialized.
@@ -174,9 +178,5 @@ public class ContentManager {
      */
     protected void lockSubscription(String name, boolean locked) {
         
-    }
-    
-    public List<SubscriptionUnpackListener> getSubscriptionUnpackListeners() {
-        return subscriptionUnpackListeners;
     }
 }

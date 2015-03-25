@@ -259,14 +259,14 @@ public class ContentUnpacker {
             
             if("post-unpack".equals( unpackStatus ) ) {
                 // Notify all post-update listeners registered with the subs manager.
-                List<SubscriptionUnpackListener> subsUnpackListeners = manager.getSubscriptionUnpackListeners();
+                List<ContentUnpackListener> contentUnpackListeners = manager.getContentUnpackListeners();
                 // Set a pointer on the listener being processed. If a previous post-unpack process
                 // was interrupted then this will pickup from that point.
                 int postUnpackIndex = subLocals.getInt("postUnpackIndex", 0 );
-                int postUnpackCount = subsUnpackListeners.size();
+                int postUnpackCount = contentUnpackListeners.size();
                 while( postUnpackIndex < postUnpackCount ) {
-                    SubscriptionUnpackListener listener = subsUnpackListeners.get( postUnpackIndex );
-                    listener.onSubscriptionUnpack( sub );
+                    ContentUnpackListener listener = contentUnpackListeners.get( postUnpackIndex );
+                    listener.onContentUnpack( sub );
                     postUnpackCount = subLocals.setInt("postUnpackIndex", postUnpackIndex + 1 );
                 }
             }
